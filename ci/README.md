@@ -62,9 +62,28 @@ names and architectures out of it.
 
 ## Known warnings
 
-`check-disklabel-proto.sh` warns that every `DISKLABEL.proto` carries
-`cylinders: 587` while its `total sectors:` implies something else — the
-line was copied forward from an older, smaller label.  It is a warning
-rather than a failure because `disklabel` takes its sizes from `total
-sectors:`; `ci/netbsd/check-disklabel-restore.sh` is what settles whether
-it matters in practice.
+These are warnings rather than failures on purpose, and each one has been
+run down rather than left as a maybe.
+
+**`cylinders: 587` in every `DISKLABEL.proto`.**  The line was copied
+forward from an older, smaller label and contradicts the file's own `total
+sectors:` — 587 cylinders of 2048 sectors is 1202176, not the 3813376 the
+same file goes on to claim.  `ci/netbsd/check-disklabel-restore.sh` settles
+it: the real `disklabel -R` accepts all ten on both 10.1 and 11.0 and reads
+the partitions back unchanged, because it takes its sizes from `total
+sectors:`.  The only thing the stale count affects is the `# (Cyl. x - y)`
+comments, which are already wrong.  Left alone; the warning stays so that a
+proto with genuinely inconsistent geometry still stands out.
+
+**Eleven commands "not installed".**  `soffice`, `fs-uae`, `hcopy`,
+`hformat`, `pkg_chk`, `ruby200`, `7z` and friends come from pkgsrc, and
+`apt-get` appears in `sunxi/u-boot/Makefile` because that target documents
+a cross-build on Linux.  None of them touch an image build, and no build
+host has all of them, so `check-commands.sh` warns for anything outside its
+`REQUIRED` list and fails only for the base-system commands an image build
+cannot proceed without.
+
+**Nine pkgsrc patches with no comment.**  pkglint wants a sentence saying
+why each patch exists, above the diff and below the `$NetBSD$` line.  Nine
+have none.  Adding one means knowing what the patch was for, which is not
+something CI can invent.
