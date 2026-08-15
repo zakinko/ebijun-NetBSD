@@ -1,0 +1,37 @@
+# The evbarm/aarch64 image built by RPI/RPIimage/Image/aarch64/Makefile.
+#
+# Booted under qemu-system-aarch64 -M virt with EDK2, which is not a
+# Raspberry Pi -- so anything here has to be a property of the image, not of
+# the board.  Peripheral checks belong on real hardware.
+
+expect ^aarch64             :: uname -p
+expect ^evbarm              :: uname -m
+
+# --- the partitioning the Makefile's gpt: target laid down ----------------
+# One EFI partition and one FFS root, in that order.  If gpt add ran with
+# the wrong sizes the root partition is short and this is where it shows.
+expect 'EFI'                :: gpt show -l ld0 2>/dev/null || gpt show ld0
+expect 'netbsd-root'        :: gpt show -l ld0 2>/dev/null || gpt show ld0
+
+# The root filesystem must have been grown to fill its partition: the
+# restore: target runs resize_ffs, and a missed resize leaves an image that
+# fills up on first pkgin run.
+expect '[0-9]{7,}'          :: df -k / | tail -1
+
+# --- what release: copies in ----------------------------------------------
+expect 'PKG_PATH'           :: cat /etc/pkg_install.conf
+run                            test -d /root
+
+# The RPI4 bwfm firmware symlink, created by the release: target.  Its name
+# contains spaces, which is exactly why it is worth asserting on.
+run                            test -e "/libdata/firmware/if_bwfm/brcmfmac43455-sdio.Raspberry Pi 4 Model B.txt"
+
+# --- what pkg: writes into rc.conf ----------------------------------------
+expect 'resize_root=NO'     :: grep resize_root /etc/rc.conf
+expect 'rc_configured=YES'  :: grep rc_configured /etc/rc.conf
+
+# --- the MSDOS boot partition is readable and holds a bootloader ----------
+run                            mkdir -p /mnt/efi
+run                            mount_msdos /dev/dk0 /mnt/efi
+expect 'BOOTAA64.EFI'       :: ls /mnt/efi/EFI/BOOT/
+run                            umount /mnt/efi

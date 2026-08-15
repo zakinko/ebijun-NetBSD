@@ -1,0 +1,104 @@
+name: image-rpi-aarch64
+
+# Build the evbarm/aarch64 image with the repository's own Makefile, then
+# boot it.
+#
+# The Makefile is used as-is; everything CI needs to change is passed on the
+# command line.  That is deliberate -- a workflow that reimplemented the
+# build would go green while the Makefile people actually run stayed broken.
+#
+# Two things are overridden:
+#
+#   RPI=   the Makefile pins a NetBSD-daily timestamp, and daily builds are
+#          deleted after a few weeks, so CI would go red on its own.  We
+#          point it at the same gzimg in a release directory instead.
+#   FILE=  the Makefile names the image after `date`, which makes the
+#          artifact name change every run.
+#
+# The boot_config target is not run: it wants the Raspberry Pi firmware
+# tree from /usr/local/NetBSD/RPI/Firmware and a UEFI zip, neither of which
+# a runner has, and neither of which qemu -M virt needs.  What it produces
+# only matters on the real board.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'RPI/RPIimage/Image/aarch64/**'
+      - 'ci/image/**'
+      - '.github/workflows/image-rpi-aarch64.yml'
+  pull_request:
+    paths:
+      - 'RPI/RPIimage/Image/aarch64/**'
+      - 'ci/image/**'
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: NetBSD release to take the gzimg from
+        default: '10.1'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      REL: ${{ github.event.inputs.release || '10.1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the image with RPI/RPIimage/Image/aarch64/Makefile
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: '10.1'
+          usesh: true
+          copyback: true
+          run: |
+            set -e
+            REL=${{ env.REL }} sh ci/image/build-rpi-aarch64.sh
+
+      - name: install QEMU and EDK2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 python3-pexpect
+          qemu-system-aarch64 --version
+
+      - name: assemble the check script
+        run: cat ci/image/checks/common.txt ci/image/checks/rpi-aarch64.txt > checks.txt
+
+      - name: boot it
+        run: |
+          # EDK2 wants a writable copy of its variable store.
+          cp /usr/share/AAVMF/AAVMF_VARS.fd vars.fd
+          python3 ci/image/boot-verify.py \
+            --checks checks.txt \
+            --boot-timeout 900 \
+            --console-log console-rpi-aarch64.log \
+            -- \
+            qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 2048 -nographic \
+              -drive if=pflash,format=raw,readonly=on,file=/usr/share/AAVMF/AAVMF_CODE.fd \
+              -drive if=pflash,format=raw,file=vars.fd \
+              -drive file=netbsd-raspi-aarch64.img,format=raw,if=virtio \
+              -device virtio-net-device,netdev=net0 \
+              -netdev user,id=net0
+
+      - name: upload the console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-rpi-aarch64
+          path: console-rpi-aarch64.log
+          if-no-files-found: warn
+
+      - name: upload the image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-raspi-aarch64-image
+          path: netbsd-raspi-aarch64.img
+          compression-level: 9
+          retention-days: 7

@@ -1,0 +1,27 @@
+# NetBSD/virt68k, booted the way virt68k/Boot does it: the kernel handed to
+# QEMU directly and the root filesystem on a virtio disk.
+
+expect ^m68k                :: uname -p
+expect 'NetBSD 11'          :: uname -v
+
+# QEMU's -M virt gives the kernel a goldfish RTC, virtio block and virtio
+# net.  If any of the three is missing the kernel booted a different
+# machine description than we think.
+expect 'ld0'                :: dmesg | grep -i 'ld0 at'
+expect 'virtio'             :: dmesg | grep -ci virtio
+
+# root=ld0 on the kernel command line has to be what actually got mounted.
+expect '/dev/ld0a'          :: mount | grep ' on / '
+
+# The sets we extracted must all be present.  /etc comes from etc.tgz,
+# /usr/bin/cc from comp.tgz, the kernel modules from modules.tgz.
+run                            test -x /usr/bin/cc
+run                            test -d /stand
+run                            test -s /etc/rc.conf
+
+# A userland this old port can actually run: exercise something that
+# touches the m68k soft-float and syscall paths rather than just ls.
+expect '^hello$'            :: printf 'int main(){puts("hello");return 0;}\n' > /tmp/t.c; cc -o /tmp/t /tmp/t.c -w && /tmp/t
+
+# Networking, via QEMU user mode: 10.0.2.15 with a gateway at 10.0.2.2.
+expect '10\.0\.2\.'         :: ifconfig vioif0 2>/dev/null || ifconfig -a

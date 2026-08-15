@@ -1,0 +1,98 @@
+name: image-virt68k
+
+# Build a NetBSD/virt68k image and boot it.
+#
+# This is the end-to-end run: sets are fetched, a disk is partitioned and
+# newfs'd with the same NetBSD tools the image Makefiles use, and then the
+# result is handed to qemu-system-m68k -M virt -- the machine virt68k/Boot
+# targets -- and driven over the serial console until the checks in
+# ci/image/checks/ have all answered.
+#
+# Two stages in one job on purpose: the build needs a NetBSD userland, the
+# boot needs QEMU on the Linux host, and the VM action leaves the built
+# image in the workspace for the host to pick up.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'virt68k/**'
+      - 'ci/image/**'
+      - '.github/workflows/image-virt68k.yml'
+  pull_request:
+    paths:
+      - 'virt68k/**'
+      - 'ci/image/**'
+  schedule:
+    - cron: '30 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: NetBSD release to build from
+        default: '11.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      REL: ${{ github.event.inputs.release || '11.0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the image inside NetBSD
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: '10.1'
+          usesh: true
+          # The built image and kernel have to come back to the host for
+          # the boot stage.
+          copyback: true
+          run: |
+            set -e
+            REL=${{ env.REL }} sh ci/image/build-virt68k.sh
+
+      - name: install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-m68k python3-pexpect
+          qemu-system-m68k --version
+
+      - name: assemble the check script
+        run: cat ci/image/checks/common.txt ci/image/checks/virt68k.txt > checks.txt
+
+      - name: boot it
+        run: |
+          python3 ci/image/boot-verify.py \
+            --checks checks.txt \
+            --boot-timeout 900 \
+            --console-log console-virt68k.log \
+            -- \
+            qemu-system-m68k -machine virt -nographic -m 512m \
+              -kernel netbsd-GENERIC \
+              -append "root=ld0" \
+              -drive file=virt68k.img,if=virtio,format=raw \
+              -device virtio-net-device,netdev=net0 \
+              -netdev user,id=net0
+
+      - name: upload the console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-virt68k
+          path: console-virt68k.log
+          if-no-files-found: warn
+
+      - name: upload the image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-virt68k-image
+          path: |
+            virt68k.img
+            netbsd-GENERIC
+          compression-level: 9
+          retention-days: 7
