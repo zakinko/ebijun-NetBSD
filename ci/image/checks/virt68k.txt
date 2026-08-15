@@ -8,7 +8,7 @@ expect 'NetBSD 11'          :: uname -v
 # net.  If any of the three is missing the kernel booted a different
 # machine description than we think.
 expect 'ld0'                :: dmesg | grep -i 'ld0 at'
-expect 'virtio'             :: dmesg | grep -ci virtio
+expect '[1-9]'              :: dmesg | grep -ci virtio
 
 # root=ld0 on the kernel command line has to be what actually got mounted.
 expect '/dev/ld0a'          :: mount | grep ' on / '

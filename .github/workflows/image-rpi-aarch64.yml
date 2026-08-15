@@ -39,6 +39,12 @@ on:
         description: NetBSD release to take the gzimg from
         default: '10.1'
 
+concurrency:
+  # A second push to the same branch supersedes the first; these
+  # runs are long enough that letting both finish is just waste.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

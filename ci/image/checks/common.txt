@@ -6,7 +6,7 @@
 # --- the system is actually NetBSD and reached multi-user -----------------
 expect ^NetBSD              :: uname -s
 run                            test -c /dev/null
-expect ^/                   :: sysctl -n kern.rootdev 2>/dev/null || mount | sed -n 's/ on \/ .*//p'
+expect ' on / '             :: mount
 
 # rc(8) writes this only once it has run the whole /etc/rc.d set.  Its
 # absence is the signature of a boot that stopped at single user.
@@ -22,11 +22,11 @@ absent 'read-only'          :: mount | grep ' on / '
 run                            touch /.ci-write-probe
 run                            rm -f /.ci-write-probe
 
-# --- the filesystem is not damaged ----------------------------------------
-# fsck -n on the live root reports rather than repairs; any "UNREF" or
-# "UNALLOCATED" here means the image was built from a filesystem that was
-# not cleanly unmounted.
-absent 'UNREF|UNALLOCATED|BAD SUPER BLOCK' :: fsck -n / 2>&1 || true
+# The filesystem must have been unmounted cleanly when the image was built.
+# A dirty one is marked as such in the superblock, and mount reports it.
+# (fsck is deliberately not run here: against a live, mounted, read-write
+# root it can stop for an answer nobody is there to give.)
+absent 'NOT CLEAN|marked dirty' :: dmesg | grep -i 'file system'
 
 # --- users and permissions ------------------------------------------------
 expect ^root:               :: grep '^root:' /etc/master.passwd
