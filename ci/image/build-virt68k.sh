@@ -108,13 +108,26 @@ sshd=NO
 dhcpcd=YES
 EOF
 
-# Root with no password: this image exists to be driven by a script over a
-# serial console inside a throwaway VM, and never leaves the runner.
-sed -i.bak 's|^root::|root::|' "$MNT/etc/master.passwd" 2>/dev/null || true
-chroot "$MNT" /usr/sbin/pwd_mkdb -p /etc/master.passwd 2>/dev/null || true
+# root already has an empty password in the etc set, and pwd.db and
+# spwd.db ship alongside it.  Editing master.passwd here would mean
+# rebuilding those, and pwd_mkdb cannot be run against this root: the
+# binaries in it are m68k and the build host is amd64.
 
-# A getty on the virt console, so boot-verify.py has a login prompt.
-grep -q '^console' "$MNT/etc/ttys" || echo 'console "/usr/libexec/getty Pc" vt100 on secure' >>"$MNT/etc/ttys"
+# A getty on the console, so boot-verify.py has a login prompt to answer.
+#
+# /etc/ttys ships the console line turned off -- on real hardware the
+# getty comes up on ttyE0 instead -- so this has to rewrite the existing
+# line rather than append one.  Appending leaves the "off" line in place
+# and first match wins, which is a boot that reaches multi-user and then
+# sits there with nothing to talk to.
+if grep -q '^console' "$MNT/etc/ttys"; then
+	sed -i.bak -E 's|^(console[[:space:]]+.*[[:space:]])off([[:space:]])|\1on\2|' \
+	    "$MNT/etc/ttys"
+	rm -f "$MNT/etc/ttys.bak"
+else
+	echo 'console "/usr/libexec/getty Pc" vt100 on secure' >>"$MNT/etc/ttys"
+fi
+grep '^console' "$MNT/etc/ttys" | while IFS= read -r l; do note "ttys: $l"; done
 
 sync
 umount "$MNT"
