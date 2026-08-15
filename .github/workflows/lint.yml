@@ -62,6 +62,11 @@ jobs:
       # Only this directory: the image helper scripts are NetBSD /bin/sh
       # written in a house style that shellcheck has opinions about, and
       # rewriting them is not this branch's business.
+      #
+      # -x so it follows the ci/lib.sh every script sources, and warning as
+      # the threshold: at info it objects to '$NetBSD$' being in single
+      # quotes, which is the entire point of writing it that way.
       - run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck -s sh ci/lib.sh ci/lint/*.sh ci/netbsd/*.sh ci/image/*.sh
+          shellcheck -s sh -x --severity=warning \
+            ci/lib.sh ci/lint/*.sh ci/netbsd/*.sh ci/image/*.sh
