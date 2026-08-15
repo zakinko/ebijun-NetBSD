@@ -33,8 +33,20 @@ except ImportError:
 
 # A prompt we set ourselves, so that matching it can never collide with
 # something the boot messages happen to contain.
-SENTINEL = "CI-READY-8f2a"
+#
+# It is assembled from two halves at the far end because the shell echoes
+# back the line that sets PS1.  If that echo contained the finished prompt
+# string, the first expect() would match the echo instead of a real prompt
+# and every command from then on would be read against the *previous*
+# command's output.
+SENT_A = "CI-READY"
+SENT_B = "8f2a"
+SENTINEL = f"{SENT_A}-{SENT_B}"
 PROMPT = re.compile(re.escape(SENTINEL) + r"> ")
+SET_PROMPT = (
+    f"stty -echo 2>/dev/null; _a={SENT_A}; _b={SENT_B}; "
+    'PS1="$_a-$_b> "; export PS1'
+)
 
 
 class Failure(Exception):
@@ -96,11 +108,18 @@ def establish_prompt(child, timeout):
             child.expect([r"#\s*$", pexpect.TIMEOUT], timeout=120)
 
     # Quieten the shell and give it a prompt that cannot be confused with
-    # console output, then drain everything printed up to now.
-    child.sendline(f"set +o emacs 2>/dev/null; PS1='{SENTINEL}> '; export PS1")
-    child.sendline("")
+    # console output.
+    child.sendline(SET_PROMPT)
     child.expect(PROMPT, timeout=120)
-    child.expect(PROMPT, timeout=120)
+
+    # Drain whatever else is queued -- the login banner, the motd, a prompt
+    # printed before PS1 took effect, a late rc(8) message.  Anything left
+    # in the buffer here would be read as the first check's output.
+    while True:
+        try:
+            child.expect(PROMPT, timeout=5)
+        except (pexpect.TIMEOUT, pexpect.EOF):
+            break
     log("shell is up")
 
 

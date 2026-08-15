@@ -33,13 +33,21 @@ section "fetching the $REL aarch64 gzimg"
 ftp -o "$IMGDIR/arm64.img.gz" "$GZIMG"
 ls -l "$IMGDIR/arm64.img.gz"
 
-section "make file gpt restore"
+section "make file gpt restore release pkg"
 # FILE is normally `date +%F`-..., which would rename the artifact daily.
 # RPI normally points into NetBSD-daily, which gets deleted.
+#
+# boot_config is the one target left out: it wants the Raspberry Pi
+# firmware tree from /usr/local/NetBSD/RPI/Firmware and a UEFI zip, and
+# what it installs only matters on the real board.  Everything else runs,
+# so that what gets booted is the image the Makefile actually produces --
+# including the root skeleton and the rc.conf edits, which is where the
+# interesting mistakes live.
 cd "$IMGDIR"
-make FILE="$OUT" RPI=arm64.img.gz file
-make FILE="$OUT" RPI=arm64.img.gz gpt
-make FILE="$OUT" RPI=arm64.img.gz restore
+for target in file gpt restore release pkg; do
+	section "make $target"
+	make FILE="$OUT" RPI=arm64.img.gz "$target"
+done
 
 section "result"
 ls -l "$IMGDIR/$OUT"

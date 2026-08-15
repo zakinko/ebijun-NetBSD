@@ -8,10 +8,10 @@ expect ^aarch64             :: uname -p
 expect ^evbarm              :: uname -m
 
 # --- the partitioning the Makefile's gpt: target laid down ----------------
-# One EFI partition and one FFS root, in that order.  If gpt add ran with
-# the wrong sizes the root partition is short and this is where it shows.
-expect 'EFI'                :: gpt show -l ld0 2>/dev/null || gpt show ld0
-expect 'netbsd-root'        :: gpt show -l ld0 2>/dev/null || gpt show ld0
+# Read through the wedges rather than with gpt(8): once the kernel has
+# attached wedges to ld0 the parent is busy and gpt cannot open it.
+expect 'EFI'                :: dkctl ld0 listwedges
+expect 'netbsd-root'        :: dkctl ld0 listwedges
 
 # The root filesystem must have been grown to fill its partition: the
 # restore: target runs resize_ffs, and a missed resize leaves an image that
@@ -30,8 +30,8 @@ run                            test -e "/libdata/firmware/if_bwfm/brcmfmac43455-
 expect 'resize_root=NO'     :: grep resize_root /etc/rc.conf
 expect 'rc_configured=YES'  :: grep rc_configured /etc/rc.conf
 
-# --- the MSDOS boot partition is readable and holds a bootloader ----------
-run                            mkdir -p /mnt/efi
-run                            mount_msdos /dev/dk0 /mnt/efi
-expect 'BOOTAA64.EFI'       :: ls /mnt/efi/EFI/BOOT/
-run                            umount /mnt/efi
+# --- the MSDOS boot partition holds a bootloader --------------------------
+# The image's own fstab already mounts it, so mounting it again gets
+# "Device busy".  Assert on what is mounted, then read it in place.
+expect 'msdos'              :: mount
+expect 'BOOTAA64.EFI'       :: ls $(mount | awk '/msdos/ {print $3; exit}')/EFI/BOOT
