@@ -1,3 +1,5 @@
+$NetBSD$
+
 --- nss/lib/dbm/src/hash.c	2026/01/17 05:44:26	1.1
 +++ nss/lib/dbm/src/hash.c	2026/01/17 05:44:52
 @@ -32,6 +32,8 @@
