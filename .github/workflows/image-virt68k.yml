@@ -43,7 +43,10 @@ permissions:
 jobs:
   build-and-boot:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # There is no acceleration for m68k -- QEMU interprets every
+    # instruction -- so both the boot and each command run at a fraction of
+    # native speed.  The compiler check alone takes minutes.
+    timeout-minutes: 120
     env:
       REL: ${{ github.event.inputs.release || '11.0' }}
     steps:
@@ -74,7 +77,8 @@ jobs:
         run: |
           python3 ci/image/boot-verify.py \
             --checks checks.txt \
-            --boot-timeout 900 \
+            --boot-timeout 2400 \
+            --cmd-timeout 900 \
             --console-log console-virt68k.log \
             -- \
             qemu-system-m68k -machine virt -nographic -m 512m \

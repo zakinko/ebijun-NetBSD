@@ -20,7 +20,10 @@ command -v disklabel >/dev/null 2>&1 || {
 	exit 127
 }
 
-WORK=$(mktemp -d)
+# /var/tmp, not /tmp: NetBSD mounts /tmp as tmpfs sized from RAM, and these
+# protos describe disks of two to three gigabytes.  A sparse file costs
+# nothing on disk but tmpfs still refuses the seek.
+WORK=$(mktemp -d /var/tmp/ci-disklabel.XXXXXX) || exit 1
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 section "disklabel -R accepts each DISKLABEL.proto"
@@ -41,10 +44,10 @@ while IFS= read -r f; do
 	# the file that size without allocating gigabytes.
 	img=$WORK/disk.img
 	rm -f "$img"
-	dd if=/dev/zero of="$img" bs=512 count=1 seek=$((total - 1)) \
-	    >/dev/null 2>&1
-	if [ "$(wc -c <"$img")" -ne $((total * 512)) ]; then
-		fail "$f" 0 "could not create a $((total * 512)) byte test image"
+	dderr=$(dd if=/dev/zero of="$img" bs=512 count=1 seek=$((total - 1)) 2>&1 >/dev/null)
+	got=$(wc -c <"$img" 2>/dev/null || echo 0)
+	if [ "$got" -ne $((total * 512)) ]; then
+		fail "$f" 0 "could not create a $((total * 512)) byte test image on $(df -h "$WORK" | tail -1 | awk '{print $6" ("$4" free)"}'): got $got bytes${dderr:+, dd said: $dderr}"
 		continue
 	fi
 
