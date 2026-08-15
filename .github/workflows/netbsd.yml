@@ -1,0 +1,61 @@
+name: netbsd
+
+# The checks that only mean something on NetBSD: whether the commands the
+# image Makefiles call actually exist, and whether disklabel accepts the
+# proto files.  A NetBSD VM takes a few minutes to come up, so this does
+# not run on every push -- only when something it looks at has changed,
+# plus a weekly run to catch NetBSD moving underneath us.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - '**/Makefile*'
+      - '**/DISKLABEL.proto'
+      - 'pkgsrc/**'
+      - 'ci/**'
+      - '.github/workflows/netbsd.yml'
+  pull_request:
+    paths:
+      - '**/Makefile*'
+      - '**/DISKLABEL.proto'
+      - 'pkgsrc/**'
+      - 'ci/**'
+  schedule:
+    # Mondays 03:00 UTC.  The point of the weekly run is that a command
+    # this repository relies on can be renamed or removed in NetBSD-current
+    # without anything here changing.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  netbsd:
+    name: NetBSD ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # 10.1 is what the images are currently built against; 11.0 is
+        # where they are going.  Running both is how a command that changed
+        # between them gets noticed before an image is built with it.
+        release: ['10.1', '11.0']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: run the NetBSD-only checks
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          usesh: true
+          copyback: false
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+          run: |
+            set -e
+            echo "== $(uname -a)"
+            sh ci/netbsd/check-commands.sh
+            sh ci/netbsd/check-disklabel-restore.sh
