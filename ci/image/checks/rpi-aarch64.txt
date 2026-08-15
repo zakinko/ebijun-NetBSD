@@ -34,4 +34,6 @@ expect 'rc_configured=YES'  :: grep rc_configured /etc/rc.conf
 # The image's own fstab already mounts it, so mounting it again gets
 # "Device busy".  Assert on what is mounted, then read it in place.
 expect 'msdos'              :: mount
-expect 'BOOTAA64.EFI'       :: ls $(mount | awk '/msdos/ {print $3; exit}')/EFI/BOOT
+# Lowercase in the pattern too: an 8.3 name comes back from a msdos
+# filesystem as bootaa64.efi, whatever case it was written in.
+expect '(?i)bootaa64\.efi'  :: ls $(mount | awk '/msdos/ {print $3; exit}')/EFI/BOOT

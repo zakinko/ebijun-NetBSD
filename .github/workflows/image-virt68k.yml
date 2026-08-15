@@ -83,7 +83,7 @@ jobs:
             -- \
             qemu-system-m68k -machine virt -nographic -m 512m \
               -kernel netbsd-GENERIC \
-              -append "root=ld0" \
+              -append "root=ld0a" \
               -drive file=virt68k.img,if=virtio,format=raw \
               -device virtio-net-device,netdev=net0 \
               -netdev user,id=net0

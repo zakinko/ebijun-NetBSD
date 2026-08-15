@@ -8,8 +8,24 @@
 # red on its own without anybody touching the repository.  We take the same
 # sets from the 11.0 release directory instead, which does not move.
 #
-# Runs inside the NetBSD VM: it needs vnconfig, disklabel, newfs and the
-# rest, which is the whole reason the VM is there.  Must be run as root.
+# The image is built with makefs rather than by newfs'ing a vnd, because
+# the build host is amd64 and the target is m68k.  Two things go wrong the
+# other way:
+#
+#   - a disklabel written by the host lands at the host's LABELSECTOR and
+#     LABELOFFSET, which are not the m68k ones.  The guest kernel does not
+#     find it, falls back to a default label where partition a starts at
+#     sector 0, looks for a filesystem there, and halts with "cannot mount
+#     root, error = 79" while the real filesystem sits a megabyte in.
+#   - FFS is byte-order sensitive, and m68k is big-endian.
+#
+# makefs takes -B for the second and needs no label at all for the first:
+# the image is one filesystem filling the disk, which is what the guest's
+# default label describes anyway, and what the liveimages virt68k/Boot
+# expects are.
+#
+# Runs inside the NetBSD VM: MAKEDEV has to create device nodes.  Must be
+# run as root.
 
 set -eu
 . "$(dirname "$0")/../lib.sh"
@@ -19,25 +35,26 @@ MIRROR=${MIRROR:-https://cdn.netbsd.org/pub/NetBSD}
 BASE=$MIRROR/NetBSD-$REL/virt68k
 OUT=${OUT:-virt68k.img}
 SIZE_MB=${SIZE_MB:-1536}
-VND=${VND:-vnd2}
-MNT=${MNT:-/mnt/ci-virt68k}
+
+# m68k. If this script is ever pointed at another port, this and the sets
+# are the two things to change.
+ENDIAN=${ENDIAN:-be}
 
 # The sets a system needs to boot multi-user and run a compiler.  Leaving
 # out x*.tgz keeps the download to something a CI run can afford.
 SETS=${SETS:-base.tgz etc.tgz comp.tgz kern-GENERIC.tgz modules.tgz text.tgz}
 
 [ "$(id -u)" = 0 ] || { echo 'must run as root' >&2; exit 1; }
+command -v makefs >/dev/null 2>&1 || { echo 'makefs not found' >&2; exit 1; }
 
-work=$(mktemp -d)
-cleanup() {
-	umount "$MNT" 2>/dev/null || true
-	vnconfig -u "$VND" 2>/dev/null || true
-	rm -rf "$work"
-}
-trap cleanup EXIT INT TERM
+# /var/tmp, not /tmp: NetBSD mounts /tmp as tmpfs sized from RAM and the
+# staging tree is well over a gigabyte.
+work=$(mktemp -d /var/tmp/ci-virt68k.XXXXXX)
+root=$work/root
+trap 'rm -rf "$work"' EXIT INT TERM
 
 section "fetching NetBSD $REL/virt68k"
-mkdir -p "$work/sets"
+mkdir -p "$work/sets" "$root"
 for s in $SETS; do
 	note "$s"
 	ftp -o "$work/sets/$s" "$BASE/binary/sets/$s"
@@ -46,92 +63,57 @@ ftp -o "$work/netbsd-GENERIC.gz" "$BASE/binary/kernel/netbsd-GENERIC.gz"
 gunzip -f "$work/netbsd-GENERIC.gz"
 cp "$work/netbsd-GENERIC" netbsd-GENERIC
 
-section "creating a ${SIZE_MB}MB image"
-rm -f "$OUT"
-dd if=/dev/zero of="$OUT" bs=1m count="$SIZE_MB" 2>/dev/null
-
-vnconfig -u "$VND" 2>/dev/null || true
-vnconfig "$VND" "$OUT"
-
-# One 4.2BSD partition covering the disk, which is what root=ld0 on the
-# kernel command line resolves to.
-total=$((SIZE_MB * 2048))
-cat >"$work/label.proto" <<EOF
-type: SCSI
-disk: STORAGE DEVICE
-label: netbsd-ci
-flags:
-bytes/sector: 512
-sectors/track: 32
-tracks/cylinder: 64
-sectors/cylinder: 2048
-cylinders: $((total / 2048))
-total sectors: $total
-rpm: 3600
-interleave: 1
-
-4 partitions:
-#        size    offset     fstype [fsize bsize cpg/sgs]
- a: $((total - 2048))      2048     4.2BSD   1024  8192    64
- d: $total         0     unused      0     0
-EOF
-disklabel -R -r "$VND" "$work/label.proto"
-disklabel "$VND"
-
-newfs -O 2 "/dev/r${VND}a"
-
-mkdir -p "$MNT"
-mount "/dev/${VND}a" "$MNT"
-
 section "extracting sets"
 for s in $SETS; do
 	note "$s"
-	tar -xzpf "$work/sets/$s" -C "$MNT"
+	tar -xzpf "$work/sets/$s" -C "$root"
 done
 
 section "configuring"
-# MAKEDEV lives in the etc set and has to be run against the new root, or
-# the image comes up with no /dev at all.
-(cd "$MNT/dev" && sh MAKEDEV all) >/dev/null 2>&1
+# MAKEDEV comes from the m68k etc set and has the m68k device numbers baked
+# into it, so running it here on amd64 still produces the right nodes.
+(cd "$root/dev" && sh MAKEDEV all)
 
-cat >"$MNT/etc/fstab" <<'EOF'
-/dev/ld0a	/	ffs	rw	1 1
+# One filesystem filling the disk, so this must match the default label the
+# guest falls back to.
+cat >"$root/etc/fstab" <<'EOF'
+/dev/ld0a	/		ffs	rw	1 1
 ptyfs		/dev/pts	ptyfs	rw	0 0
 EOF
 
-cat >>"$MNT/etc/rc.conf" <<'EOF'
+cat >>"$root/etc/rc.conf" <<'EOF'
 rc_configured=YES
 hostname=netbsd-ci
 sshd=NO
-# The CI console is a serial line with nothing on the other end once the
-# checks finish; a DHCP client that keeps retrying just fills the log.
 dhcpcd=YES
 EOF
 
-# root already has an empty password in the etc set, and pwd.db and
-# spwd.db ship alongside it.  Editing master.passwd here would mean
-# rebuilding those, and pwd_mkdb cannot be run against this root: the
-# binaries in it are m68k and the build host is amd64.
-
 # A getty on the console, so boot-verify.py has a login prompt to answer.
 #
-# /etc/ttys ships the console line turned off -- on real hardware the
-# getty comes up on ttyE0 instead -- so this has to rewrite the existing
-# line rather than append one.  Appending leaves the "off" line in place
-# and first match wins, which is a boot that reaches multi-user and then
-# sits there with nothing to talk to.
-if grep -q '^console' "$MNT/etc/ttys"; then
+# /etc/ttys ships the console line turned off -- on real hardware the getty
+# comes up on ttyE0 instead -- so this has to rewrite the existing line
+# rather than append one.  Appending leaves the "off" line in place and
+# first match wins, which is a boot that reaches multi-user and then sits
+# there with nothing to talk to.
+if grep -q '^console' "$root/etc/ttys"; then
 	sed -i.bak -E 's|^(console[[:space:]]+.*[[:space:]])off([[:space:]])|\1on\2|' \
-	    "$MNT/etc/ttys"
-	rm -f "$MNT/etc/ttys.bak"
+	    "$root/etc/ttys"
+	rm -f "$root/etc/ttys.bak"
 else
-	echo 'console "/usr/libexec/getty Pc" vt100 on secure' >>"$MNT/etc/ttys"
+	echo 'console	"/usr/libexec/getty Pc"	vt100	on secure' >>"$root/etc/ttys"
 fi
-grep '^console' "$MNT/etc/ttys" | while IFS= read -r l; do note "ttys: $l"; done
+grep '^console' "$root/etc/ttys" | while IFS= read -r l; do note "ttys: $l"; done
 
-sync
-umount "$MNT"
-vnconfig -u "$VND"
+# root already has an empty password in the etc set, and pwd.db and spwd.db
+# ship alongside it.  Editing master.passwd here would mean rebuilding
+# those, and pwd_mkdb cannot run against this root: its binaries are m68k.
+
+section "makefs -t ffs -B $ENDIAN -s ${SIZE_MB}m"
+rm -f "$OUT"
+makefs -t ffs -B "$ENDIAN" -s "${SIZE_MB}m" \
+    -o version=2,bsize=16384,fsize=2048 \
+    "$OUT" "$root"
 
 section "done"
 ls -l "$OUT" netbsd-GENERIC
+file "$OUT" 2>/dev/null || true

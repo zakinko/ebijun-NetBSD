@@ -62,6 +62,20 @@ def annotate(level, msg):
         print(f"::{level}::{msg}", flush=True)
 
 
+def unquote(pattern):
+    """Drop one layer of surrounding quotes from a check's pattern.
+
+    Patterns get quoted in the check files so that leading and trailing
+    spaces survive being read -- `expect ' on / '` is asking about exactly
+    that, spaces included.  Without this the quote characters end up in the
+    regex and are looked for in the output, which fails an `expect` loudly
+    and passes an `absent` silently.  The silent half is the dangerous one.
+    """
+    if len(pattern) >= 2 and pattern[0] == pattern[-1] and pattern[0] in "'\"":
+        return pattern[1:-1]
+    return pattern
+
+
 def parse_checks(path):
     steps = []
     with open(path, encoding="utf-8") as fh:
@@ -73,14 +87,19 @@ def parse_checks(path):
             rest = rest.strip()
             if verb == "wait":
                 secs, _, pattern = rest.partition(" ")
-                steps.append(("wait", lineno, float(secs), pattern.strip()))
+                steps.append(("wait", lineno, float(secs), unquote(pattern.strip())))
             elif verb == "send":
                 steps.append(("send", lineno, rest))
             elif verb in ("expect", "absent"):
                 pattern, sep, command = rest.partition("::")
                 if not sep:
                     raise Failure(f"{path}:{lineno}: {verb} needs 'REGEX :: COMMAND'")
-                steps.append((verb, lineno, pattern.strip(), command.strip()))
+                pattern = unquote(pattern.strip())
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    raise Failure(f"{path}:{lineno}: bad regex {pattern!r}: {e}")
+                steps.append((verb, lineno, pattern, command.strip()))
             elif verb == "run":
                 steps.append(("run", lineno, rest))
             else:
@@ -106,6 +125,12 @@ def establish_prompt(child, timeout):
         if j == 0:
             child.sendline("")
             child.expect([r"#\s*$", pexpect.TIMEOUT], timeout=120)
+
+    # Widen the target's idea of the terminal.  At the default 80 columns
+    # the longer check commands wrap, and the wrapped echo comes back with
+    # backspaces embedded in it -- which defeats the filter that drops the
+    # echoed line from a command's output.
+    child.sendline("stty rows 50 columns 200 2>/dev/null")
 
     # Quieten the shell and give it a prompt that cannot be confused with
     # console output.
