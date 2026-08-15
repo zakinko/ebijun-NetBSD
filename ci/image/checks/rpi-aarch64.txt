@@ -9,9 +9,13 @@ expect ^evbarm              :: uname -m
 
 # --- the partitioning the Makefile's gpt: target laid down ----------------
 # Read through the wedges rather than with gpt(8): once the kernel has
-# attached wedges to ld0 the parent is busy and gpt cannot open it.
-expect 'EFI'                :: dkctl ld0 listwedges
-expect 'netbsd-root'        :: dkctl ld0 listwedges
+# attached wedges to a disk the parent is busy and gpt cannot open it.
+#
+# The parent is not named here either.  It was ld4 under qemu -M virt with
+# EDK2 and would be ld0 on a Raspberry Pi; which number a virtio disk lands
+# on is a property of the machine, not of the image, so ask every disk.
+expect 'EFI'                :: for d in $(sysctl -n hw.disknames); do dkctl $d listwedges 2>/dev/null; done
+expect 'netbsd-root'        :: for d in $(sysctl -n hw.disknames); do dkctl $d listwedges 2>/dev/null; done
 
 # The root filesystem must have been grown to fill its partition: the
 # restore: target runs resize_ffs, and a missed resize leaves an image that

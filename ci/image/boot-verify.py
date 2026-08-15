@@ -57,6 +57,26 @@ def log(msg):
     print(f"[boot-verify] {msg}", flush=True)
 
 
+def sendline(child, text, delay):
+    """Type a line one character at a time.
+
+    An emulated serial console is not a pipe.  The Goldfish TTY the m68k
+    kernel runs on drops characters when they arrive faster than it reads
+    them, and a dropped character in the middle of "root" leaves the login
+    prompt waiting while everything sent afterwards is typed into it.  A
+    couple of hundredths of a second per character costs a second or two
+    per command and makes the difference between a session and a mess.
+    """
+    if delay <= 0:
+        child.sendline(text)
+        return
+    for ch in text:
+        child.send(ch)
+        time.sleep(delay)
+    child.send("\r")
+    time.sleep(delay)
+
+
 def annotate(level, msg):
     if os.environ.get("GITHUB_ACTIONS"):
         print(f"::{level}::{msg}", flush=True)
@@ -107,7 +127,7 @@ def parse_checks(path):
     return steps
 
 
-def establish_prompt(child, timeout):
+def establish_prompt(child, timeout, delay):
     """Get from a login prompt to a shell with a prompt we recognise.
 
     Only "login:" and "Password:" are matched here, both anchored at the
@@ -129,32 +149,41 @@ def establish_prompt(child, timeout):
         raise Failure("QEMU exited before reaching a login prompt")
 
     if idx == 0:
-        child.sendline("root")
+        sendline(child, "root", delay)
         # A root account with a password would be a packaging mistake on
         # these images, but tolerate one prompt rather than hang.
         j = child.expect(
             [r"[Pp]assword: *$", pexpect.TIMEOUT, pexpect.EOF], timeout=60
         )
         if j == 0:
-            child.sendline("")
+            sendline(child, "", delay)
     else:
-        child.sendline("")
+        sendline(child, "", delay)
 
     # Widen the target's idea of the terminal.  At the default 80 columns
     # the longer check commands wrap, and the wrapped echo comes back with
     # backspaces embedded in it -- which defeats the filter that drops the
     # echoed line from a command's output.
-    child.sendline("stty rows 50 columns 200 2>/dev/null")
-
-    # Quieten the shell and give it a prompt that cannot be confused with
-    # console output.  This is also what confirms the login worked: nothing
-    # else echoes this string back.
-    child.sendline(SET_PROMPT)
-    try:
-        child.expect(PROMPT, timeout=180)
-    except pexpect.TIMEOUT:
+    #
+    # Then quieten the shell and give it a prompt that cannot be confused
+    # with console output.  Getting that prompt back is also what confirms
+    # the login worked: nothing else echoes this string.
+    #
+    # Retried, because a character lost on the way in leaves the console
+    # waiting at a prompt that will never be satisfied, and sending the
+    # line again is the only way to find out.
+    for attempt in range(1, 5):
+        sendline(child, "stty rows 50 columns 200 2>/dev/null", delay)
+        sendline(child, SET_PROMPT, delay)
+        try:
+            child.expect(PROMPT, timeout=60)
+            break
+        except pexpect.TIMEOUT:
+            log(f"no prompt yet (attempt {attempt}); sending a newline and retrying")
+            sendline(child, "", delay)
+    else:
         raise Failure(
-            "logged in but no shell prompt came back; "
+            "logged in but no shell prompt came back after 4 tries; "
             "the last of the console is in the log"
         )
 
@@ -169,9 +198,9 @@ def establish_prompt(child, timeout):
     log("shell is up")
 
 
-def command(child, cmd, timeout):
+def command(child, cmd, timeout, delay=0.0):
     """Run cmd, return (output, exit status)."""
-    child.sendline(f"{cmd}; echo {SENTINEL}rc=$?")
+    sendline(child, f"{cmd}; echo {SENTINEL}rc=$?", delay)
     child.expect(PROMPT, timeout=timeout)
     raw = child.before
     m = re.search(re.escape(SENTINEL) + r"rc=(\d+)", raw)
@@ -191,6 +220,9 @@ def main():
     ap.add_argument("--boot-timeout", type=float, default=900.0)
     ap.add_argument("--cmd-timeout", type=float, default=180.0)
     ap.add_argument("--console-log", default="console.log")
+    ap.add_argument("--send-delay", type=float, default=0.02,
+                    help="seconds between characters typed at the console; "
+                         "raise it for a slow emulated UART, 0 to disable")
     ap.add_argument("qemu", nargs=argparse.REMAINDER,
                     help="-- followed by the QEMU command line")
     args = ap.parse_args()
@@ -213,7 +245,7 @@ def main():
         child.logfile_read = console
         failures = []
         try:
-            establish_prompt(child, args.boot_timeout)
+            establish_prompt(child, args.boot_timeout, args.send_delay)
             log(f"reached multi-user in {time.time() - started:.0f}s")
 
             for step in steps:
@@ -227,10 +259,10 @@ def main():
                         failures.append(f"{args.checks}:{lineno}: "
                                         f"/{pattern}/ did not appear within {secs:g}s")
                 elif verb == "send":
-                    child.sendline(step[2])
+                    sendline(child, step[2], args.send_delay)
                 elif verb == "run":
                     cmd = step[2]
-                    out, rc = command(child, cmd, args.cmd_timeout)
+                    out, rc = command(child, cmd, args.cmd_timeout, args.send_delay)
                     if rc != 0:
                         failures.append(f"{args.checks}:{lineno}: "
                                         f"`{cmd}` exited {rc}\n{out}")
@@ -238,7 +270,7 @@ def main():
                         log(f"ok   {cmd}")
                 elif verb in ("expect", "absent"):
                     _, _, pattern, cmd = step
-                    out, _ = command(child, cmd, args.cmd_timeout)
+                    out, _ = command(child, cmd, args.cmd_timeout, args.send_delay)
                     hit = re.search(pattern, out, re.MULTILINE) is not None
                     if verb == "expect" and not hit:
                         failures.append(f"{args.checks}:{lineno}: "

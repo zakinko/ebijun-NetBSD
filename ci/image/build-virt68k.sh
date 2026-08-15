@@ -86,6 +86,9 @@ rc_configured=YES
 hostname=netbsd-ci
 sshd=NO
 dhcpcd=YES
+# There is no swap partition -- the image is one filesystem filling the
+# disk -- so savecore has nothing to look at and only prints an error.
+savecore=NO
 EOF
 
 # A getty on the console, so boot-verify.py has a login prompt to answer.
