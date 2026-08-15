@@ -1,0 +1,67 @@
+name: lint
+
+# The fast gate.  Everything here runs on a stock Ubuntu runner in a couple
+# of minutes and needs no NetBSD, so it can afford to run on every push.
+# Anything that needs a real NetBSD userland lives in netbsd.yml instead.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  makefiles:
+    name: bmake parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y bmake
+      - run: sh ci/lint/check-makefiles.sh
+
+  disklabel:
+    name: DISKLABEL.proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/lint/check-disklabel-proto.sh
+
+  patches:
+    name: pkgsrc patches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/lint/check-pkgsrc-patches.sh
+
+  hygiene:
+    name: encoding and symlinks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/lint/check-hygiene.sh
+
+  scripts:
+    name: ruby, YAML, Scheme, XPM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: pip install --quiet pyyaml
+      - run: sh ci/lint/check-scripts.sh
+
+  shellcheck:
+    name: shellcheck (ci/ only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Only this directory: the image helper scripts are NetBSD /bin/sh
+      # written in a house style that shellcheck has opinions about, and
+      # rewriting them is not this branch's business.
+      - run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -s sh ci/lib.sh ci/lint/*.sh ci/netbsd/*.sh ci/image/*.sh
