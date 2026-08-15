@@ -108,23 +108,37 @@ def parse_checks(path):
 
 
 def establish_prompt(child, timeout):
-    """Get from a login prompt to a shell with a prompt we recognise."""
+    """Get from a login prompt to a shell with a prompt we recognise.
+
+    Only "login:" and "Password:" are matched here, both anchored at the
+    end of the buffer.  An earlier version also accepted a bare "#" as an
+    already-root shell, which matched a hash somewhere in the boot messages
+    the moment it happened to sit at the end of the buffer: the driver then
+    typed its setup at a console that was still counting down to multi-user
+    and never logged in at all.  From here on the only thing matched is the
+    prompt we set ourselves, which cannot occur by accident.
+    """
     log("waiting for a login prompt")
     idx = child.expect(
-        [r"login:", r"#\s*$", pexpect.TIMEOUT, pexpect.EOF], timeout=timeout
+        [r"login: *$", r"[Pp]assword: *$", pexpect.TIMEOUT, pexpect.EOF],
+        timeout=timeout,
     )
     if idx == 2:
         raise Failure(f"no login prompt within {timeout}s")
     if idx == 3:
         raise Failure("QEMU exited before reaching a login prompt")
+
     if idx == 0:
         child.sendline("root")
         # A root account with a password would be a packaging mistake on
         # these images, but tolerate one prompt rather than hang.
-        j = child.expect([r"[Pp]assword:", r"#\s*$", pexpect.TIMEOUT], timeout=120)
+        j = child.expect(
+            [r"[Pp]assword: *$", pexpect.TIMEOUT, pexpect.EOF], timeout=60
+        )
         if j == 0:
             child.sendline("")
-            child.expect([r"#\s*$", pexpect.TIMEOUT], timeout=120)
+    else:
+        child.sendline("")
 
     # Widen the target's idea of the terminal.  At the default 80 columns
     # the longer check commands wrap, and the wrapped echo comes back with
@@ -133,9 +147,16 @@ def establish_prompt(child, timeout):
     child.sendline("stty rows 50 columns 200 2>/dev/null")
 
     # Quieten the shell and give it a prompt that cannot be confused with
-    # console output.
+    # console output.  This is also what confirms the login worked: nothing
+    # else echoes this string back.
     child.sendline(SET_PROMPT)
-    child.expect(PROMPT, timeout=120)
+    try:
+        child.expect(PROMPT, timeout=180)
+    except pexpect.TIMEOUT:
+        raise Failure(
+            "logged in but no shell prompt came back; "
+            "the last of the console is in the log"
+        )
 
     # Drain whatever else is queued -- the login banner, the motd, a prompt
     # printed before PS1 took effect, a late rc(8) message.  Anything left

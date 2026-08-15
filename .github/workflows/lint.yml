@@ -60,6 +60,17 @@ jobs:
       - run: pip install --quiet pyyaml
       - run: sh ci/lint/check-scripts.sh
 
+  boot-driver:
+    name: boot-verify self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The driver is the one thing in ci/ whose bugs look exactly like a
+      # broken image, and each one has cost a full build-and-boot run to
+      # find.  Ten seconds against a fake console catches them here.
+      - run: pip install --quiet pexpect
+      - run: sh ci/image/selftest.sh
+
   shellcheck:
     name: shellcheck (ci/ only)
     runs-on: ubuntu-latest
