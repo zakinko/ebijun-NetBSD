@@ -39,13 +39,43 @@ upstream.  Only a real pkgsrc build does that.
 ### `ci/image/` — build, then boot
 
 `build-virt68k.sh` and `build-rpi-aarch64.sh` run in the VM and produce an
-image; `boot-verify.py` then runs on the Linux host and drives it under
-QEMU over the serial console.
+image; `boot-verify.py` then runs it under QEMU on the Linux host and
+checks what the running system says.
 
 `build-rpi-aarch64.sh` invokes `RPI/RPIimage/Image/aarch64/Makefile`
-unmodified, overriding only `RPI=` and `FILE=`.  A workflow that
-reimplemented the build would go green while the Makefile people actually
-run stayed broken.
+unmodified — `file gpt restore release pkg`, overriding only `RPI=` and
+`FILE=`.  A workflow that reimplemented the build would go green while the
+Makefile people actually run stayed broken.  `boot_config` is the one
+target left out: it wants the Raspberry Pi firmware tree from
+`/usr/local/NetBSD/RPI/Firmware` and a UEFI zip, and what it installs only
+matters on the real board.
+
+#### Two ways to run the checks, and why
+
+**aarch64 logs in.**  `boot-verify.py` waits for `login:`, answers it, and
+types each check at the shell.  Straightforward, and it works because QEMU
+can accelerate aarch64.
+
+**virt68k does not.**  QEMU interprets every m68k instruction, and its
+Goldfish TTY cannot be typed at reliably: whatever is sent in the window
+after getty prints its prompt is discarded, nothing is echoed back to say
+so, and `login` collects the retries as usernames until it times out 300
+seconds later.  A fixed delay does not help, nor a larger one, nor waiting
+for each character to echo, nor a plain serial line instead of
+`-nographic`.  The console can be read.  It cannot be written to.
+
+So for that port nothing is written to it.  `--emit-script` compiles the
+checks into `sh`, `build-virt68k.sh` installs it in the image, `rc.local`
+runs it at boot, and `--in-image` reads the results off the console.  Each
+check frames its output with `CI-BEGIN`/`CI-END`; the patterns are still
+matched here in Python, because the check files use Python regex — `(?i)`
+and `{7,}` both appear — and translating them into whatever `grep` the
+image has would quietly change what they mean.
+
+It is also far quicker: 24 checks read in about eight seconds.
+
+`selftest.sh` covers both paths against a fake console, with no image and
+no emulator.  Everything in it is there because it went wrong once.
 
 ## Adding a boot check
 
