@@ -82,7 +82,8 @@ jobs:
             --send-delay 0.06 \
             --console-log console-virt68k.log \
             -- \
-            qemu-system-m68k -machine virt -nographic -m 512m \
+            qemu-system-m68k -machine virt -m 512m \
+              -display none -serial stdio \
               -kernel netbsd-GENERIC \
               -append "root=ld0a" \
               -drive file=virt68k.img,if=virtio,format=raw \

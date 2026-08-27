@@ -157,61 +157,63 @@ def parse_checks(path):
 
 
 def establish_prompt(child, timeout, delay):
-    """Get from a login prompt to a shell with a prompt we recognise.
+    """Log in, and keep answering whatever the console shows until a shell
+    on the other end says hello.
 
-    Only "login:" and "Password:" are matched here, both anchored at the
-    end of the buffer.  An earlier version also accepted a bare "#" as an
-    already-root shell, which matched a hash somewhere in the boot messages
-    the moment it happened to sit at the end of the buffer: the driver then
-    typed its setup at a console that was still counting down to multi-user
-    and never logged in at all.  From here on the only thing matched is the
-    prompt we set ourselves, which cannot occur by accident.
+    Not a sequence of steps, because the console does not reliably perform
+    them.  getty prints "login:" before it has finished setting the
+    terminal up and flushes the input queue when it does, so the first
+    thing typed is often partly eaten:
+
+      login: f2aready
+      Login incorrect or refused on this terminal.
+      login: echo CI-READY""-8f2aready
+
+    The retry there arrived intact -- input works fine once the console has
+    settled -- but the driver was by then waiting for a shell that had
+    never been logged into, while login patiently collected its attempts as
+    usernames.
+
+    So this is a loop instead: answer a login prompt with root, answer a
+    password prompt with nothing, poke a silent console with the handshake,
+    and finish when the handshake comes back.  Every wrong guess costs one
+    more turn around the loop rather than the run.
     """
     log("waiting for a login prompt")
-    idx = child.expect(
-        [r"login: *$", r"[Pp]assword: *$", pexpect.TIMEOUT, pexpect.EOF],
-        timeout=timeout,
-    )
-    if idx == 2:
-        raise Failure(f"no login prompt within {timeout}s")
-    if idx == 3:
-        raise Failure("QEMU exited before reaching a login prompt")
+    deadline = time.time() + timeout
+    poked = 0
 
-    # getty prints its prompt before it has finished setting the terminal
-    # up, and flushes the input queue when it does.  Anything typed inside
-    # that window is discarded however slowly it was sent -- which is what
-    # "login: r" was.  Let it settle first.
-    if delay > 0:
-        time.sleep(3)
-
-    if idx == 0:
-        sendline(child, "root", delay)
-        # A root account with a password would be a packaging mistake on
-        # these images, but tolerate one prompt rather than hang.
-        j = child.expect(
-            [r"[Pp]assword: *$", pexpect.TIMEOUT, pexpect.EOF], timeout=60
+    while time.time() < deadline:
+        idx = child.expect(
+            [r"login: *$", r"[Pp]assword: *$", READY_RE,
+             pexpect.TIMEOUT, pexpect.EOF],
+            timeout=min(90, max(30, deadline - time.time())),
         )
-        if j == 0:
-            sendline(child, "", delay)
-    else:
-        sendline(child, "", delay)
 
-    # Confirm there is a shell on the other end by having it print the
-    # marker.  Retried one line at a time: a character lost on the way in
-    # means the shell is sitting on a partial line, and a bare newline
-    # clears it.
-    for attempt in range(1, 7):
-        sendline(child, f"echo {MARKER}ready", delay)
-        try:
-            child.expect(READY_RE, timeout=45)
+        if idx == 2:
             break
-        except pexpect.TIMEOUT:
-            log(f"no answer from the shell yet (attempt {attempt}); retrying")
+
+        if idx == 4:
+            raise Failure("QEMU exited before a shell was reached")
+
+        if idx == 0:
+            # The settle window.  Three seconds was not enough on virt68k;
+            # the cost of being generous here is paid once.
+            if delay > 0:
+                time.sleep(8)
+            sendline(child, "root", delay)
+        elif idx == 1:
+            # A root account with a password would be a packaging mistake
+            # on these images, but answer the prompt rather than hang.
             sendline(child, "", delay)
+            sendline(child, f"echo {MARKER}ready", delay)
+        else:
+            poked += 1
+            log(f"console quiet; asking the shell to say hello ({poked})")
+            sendline(child, f"echo {MARKER}ready", delay)
     else:
         raise Failure(
-            "logged in but the shell never answered; "
-            "the last of the console is in the log"
+            f"no shell within {timeout}s; the last of the console is in the log"
         )
 
     # Widen the target's idea of the terminal.  At the default 80 columns
@@ -219,7 +221,7 @@ def establish_prompt(child, timeout, delay):
     # backspaces embedded in it, which defeats the filter that drops the
     # echoed line from a command's output.  Best effort: if the characters
     # do not all arrive, the next command's marker still resynchronises.
-    command(child, "stty rows 50 columns 200 2>/dev/null", 60, delay)
+    command(child, "stty rows 50 columns 200 2>/dev/null", 120, delay)
     log("shell is up")
 
 
