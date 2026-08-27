@@ -34,6 +34,9 @@ REL=${REL:-11.0}
 MIRROR=${MIRROR:-https://cdn.netbsd.org/pub/NetBSD}
 BASE=$MIRROR/NetBSD-$REL/virt68k
 OUT=${OUT:-virt68k.img}
+# Compiled by boot-verify.py --emit-script on the Linux side, because
+# the NetBSD VM has no Python.
+CHECKS_SCRIPT=${CHECKS_SCRIPT:-$CI_ROOT/cicheck.sh}
 SIZE_MB=${SIZE_MB:-1536}
 
 # m68k. If this script is ever pointed at another port, this and the sets
@@ -91,21 +94,24 @@ dhcpcd=YES
 savecore=NO
 EOF
 
-# A getty on the console, so boot-verify.py has a login prompt to answer.
+# Nothing logs in to this image.  Driving a console by typing at it works
+# on a port QEMU can accelerate and does not work on one it interprets: the
+# Goldfish TTY discarded whatever was typed in the window after getty
+# printed its prompt, echoed nothing back to say so, and left login
+# collecting the retries as usernames until it timed out.
 #
-# /etc/ttys ships the console line turned off -- on real hardware the getty
-# comes up on ttyE0 instead -- so this has to rewrite the existing line
-# rather than append one.  Appending leaves the "off" line in place and
-# first match wins, which is a boot that reaches multi-user and then sits
-# there with nothing to talk to.
-if grep -q '^console' "$root/etc/ttys"; then
-	sed -i.bak -E 's|^(console[[:space:]]+.*[[:space:]])off([[:space:]])|\1on\2|' \
-	    "$root/etc/ttys"
-	rm -f "$root/etc/ttys.bak"
+# So the checks are compiled to a shell script on the Linux side, installed
+# here, and run at boot from rc.local.  The console is read, never written,
+# and /etc/ttys is left as it ships -- with the console getty off, which is
+# one less thing writing to the line.
+if [ -f "$CHECKS_SCRIPT" ]; then
+	cp "$CHECKS_SCRIPT" "$root/root/cicheck.sh"
+	chmod 755 "$root/root/cicheck.sh"
+	printf '\nsh /root/cicheck.sh\n' >>"$root/etc/rc.local"
+	note "installed $(wc -l <"$CHECKS_SCRIPT") lines of checks as /root/cicheck.sh"
 else
-	echo 'console	"/usr/libexec/getty Pc"	vt100	on secure' >>"$root/etc/ttys"
+	note "no $CHECKS_SCRIPT; the image will boot but check nothing"
 fi
-grep '^console' "$root/etc/ttys" | while IFS= read -r l; do note "ttys: $l"; done
 
 # root already has an empty password in the etc set, and pwd.db and spwd.db
 # ship alongside it.  Editing master.passwd here would mean rebuilding

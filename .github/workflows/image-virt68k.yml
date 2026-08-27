@@ -52,6 +52,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Compiled here rather than in the VM: the checks are parsed by the
+      # same Python that will match their patterns afterwards, so there is
+      # one definition of what a check means, and the NetBSD VM has no
+      # Python anyway.
+      - name: compile the checks into a script for the image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pexpect
+          cat ci/image/checks/common.txt ci/image/checks/virt68k.txt > checks.txt
+          python3 ci/image/boot-verify.py --checks checks.txt --emit-script > cicheck.sh
+          echo "--- cicheck.sh ---"
+          cat cicheck.sh
+
       - name: build the image inside NetBSD
         uses: vmactions/netbsd-vm@v1
         with:
@@ -66,20 +79,16 @@ jobs:
 
       - name: install QEMU
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-m68k python3-pexpect
+          sudo apt-get install -y qemu-system-m68k
           qemu-system-m68k --version
 
-      - name: assemble the check script
-        run: cat ci/image/checks/common.txt ci/image/checks/virt68k.txt > checks.txt
-
-      - name: boot it
+      - name: boot it and read the results
         run: |
           python3 ci/image/boot-verify.py \
             --checks checks.txt \
-            --boot-timeout 2400 \
+            --in-image \
+            --boot-timeout 3000 \
             --cmd-timeout 900 \
-            --send-delay 0.06 \
             --console-log console-virt68k.log \
             -- \
             qemu-system-m68k -machine virt -m 512m \

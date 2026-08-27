@@ -98,4 +98,51 @@ for d in 0 0.01; do
 	done
 done
 
+# --- the in-image path ---------------------------------------------------
+#
+# Nothing types at a virt68k console; the checks are compiled to a shell
+# script, run at boot, and read off the console.  That is a second way to
+# get every one of these answers wrong, so exercise it too -- here with a
+# fake "QEMU" that is just the compiled script, which needs neither an
+# image nor an emulator.
+section "the compiled in-image script"
+
+python3 ci/image/boot-verify.py --checks "$WORK/checks" --emit-script \
+    >"$WORK/cicheck.sh"
+
+# Running it here rather than in an image, so it must not power the machine
+# off when it reaches the end.
+sed -e 's|^halt -p$|exit 0|' -e 's|^sync$|:|' "$WORK/cicheck.sh" \
+    >"$WORK/cicheck-local.sh"
+
+printf '#!/bin/sh\nexec /bin/sh %s\n' "$WORK/cicheck-local.sh" >"$WORK/fakeqemu"
+chmod +x "$WORK/fakeqemu"
+
+out=$(python3 ci/image/boot-verify.py \
+    --checks "$WORK/checks" --in-image \
+    --boot-timeout 60 --cmd-timeout 30 \
+    --console-log "$WORK/console-inimage.log" \
+    -- "$WORK/fakeqemu" 2>&1) || true
+
+echo "$out" | sed 's/^/  /'
+
+nfail=$(echo "$out" | grep -c '^FAIL ' || true)
+if [ "$nfail" -ne 1 ]; then
+	fail ci/image/boot-verify.py 0 \
+	    "in-image: expected exactly 1 failure, got $nfail"
+elif ! echo "$out" | grep -q 'reallyhere.*unexpectedly matched'; then
+	fail ci/image/boot-verify.py 0 \
+	    'in-image: the one failure was not the absent negative control'
+fi
+
+# Every check has to have come back, or results are being dropped
+# somewhere between the script and the reader.  Counted rather than named:
+# the line numbers belong to the heredoc above and would go stale the first
+# time a comment is added to it.
+want=$(grep -cE '^(expect|absent|run) ' "$WORK/checks")
+got=$(echo "$out" | grep -c 'got line ' || true)
+[ "$got" -eq "$want" ] ||
+    fail ci/image/boot-verify.py 0 \
+        "in-image: $want checks compiled but $got results came back"
+
 finish
