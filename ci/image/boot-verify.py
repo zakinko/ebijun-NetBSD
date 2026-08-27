@@ -31,22 +31,27 @@ try:
 except ImportError:
     sys.exit("boot-verify: pexpect is not installed (pip install pexpect)")
 
-# A prompt we set ourselves, so that matching it can never collide with
-# something the boot messages happen to contain.
+# Synchronisation is done with a marker the commands print, not with the
+# shell prompt.
 #
-# It is assembled from two halves at the far end because the shell echoes
-# back the line that sets PS1.  If that echo contained the finished prompt
-# string, the first expect() would match the echo instead of a real prompt
-# and every command from then on would be read against the *previous*
-# command's output.
+# Setting PS1 and matching on it was the obvious approach and it does not
+# survive a slow console.  Under emulation the m68k Goldfish TTY drops
+# characters, and a line that sets PS1 is long: when half of it arrives the
+# prompt never changes and the driver waits forever for a string the far
+# end was never told to print.  A marker travels inside the command that is
+# being run anyway, so a dropped character costs that one command instead
+# of the whole session.
+#
+# The two halves are glued at the far end with an empty string, so the
+# shell's echo of the command line reads CI-READY""-8f2arc=$? while only
+# its output reads CI-READY-8f2arc=0.  That is what keeps the echo from
+# being mistaken for the answer.
 SENT_A = "CI-READY"
 SENT_B = "8f2a"
 SENTINEL = f"{SENT_A}-{SENT_B}"
-PROMPT = re.compile(re.escape(SENTINEL) + r"> ")
-SET_PROMPT = (
-    f"stty -echo 2>/dev/null; _a={SENT_A}; _b={SENT_B}; "
-    'PS1="$_a-$_b> "; export PS1'
-)
+MARKER = f'{SENT_A}""-{SENT_B}'
+RC_RE = re.compile(re.escape(SENTINEL) + r"rc=(-?\d+)")
+READY_RE = re.compile(re.escape(SENTINEL) + r"ready")
 
 
 class Failure(Exception):
@@ -160,57 +165,50 @@ def establish_prompt(child, timeout, delay):
     else:
         sendline(child, "", delay)
 
-    # Widen the target's idea of the terminal.  At the default 80 columns
-    # the longer check commands wrap, and the wrapped echo comes back with
-    # backspaces embedded in it -- which defeats the filter that drops the
-    # echoed line from a command's output.
-    #
-    # Then quieten the shell and give it a prompt that cannot be confused
-    # with console output.  Getting that prompt back is also what confirms
-    # the login worked: nothing else echoes this string.
-    #
-    # Retried, because a character lost on the way in leaves the console
-    # waiting at a prompt that will never be satisfied, and sending the
-    # line again is the only way to find out.
-    for attempt in range(1, 5):
-        sendline(child, "stty rows 50 columns 200 2>/dev/null", delay)
-        sendline(child, SET_PROMPT, delay)
+    # Confirm there is a shell on the other end by having it print the
+    # marker.  Retried one line at a time: a character lost on the way in
+    # means the shell is sitting on a partial line, and a bare newline
+    # clears it.
+    for attempt in range(1, 7):
+        sendline(child, f"echo {MARKER}ready", delay)
         try:
-            child.expect(PROMPT, timeout=60)
+            child.expect(READY_RE, timeout=45)
             break
         except pexpect.TIMEOUT:
-            log(f"no prompt yet (attempt {attempt}); sending a newline and retrying")
+            log(f"no answer from the shell yet (attempt {attempt}); retrying")
             sendline(child, "", delay)
     else:
         raise Failure(
-            "logged in but no shell prompt came back after 4 tries; "
+            "logged in but the shell never answered; "
             "the last of the console is in the log"
         )
 
-    # Drain whatever else is queued -- the login banner, the motd, a prompt
-    # printed before PS1 took effect, a late rc(8) message.  Anything left
-    # in the buffer here would be read as the first check's output.
-    while True:
-        try:
-            child.expect(PROMPT, timeout=5)
-        except (pexpect.TIMEOUT, pexpect.EOF):
-            break
+    # Widen the target's idea of the terminal.  At the default 80 columns
+    # the longer check commands wrap, and the wrapped echo comes back with
+    # backspaces embedded in it, which defeats the filter that drops the
+    # echoed line from a command's output.  Best effort: if the characters
+    # do not all arrive, the next command's marker still resynchronises.
+    command(child, "stty rows 50 columns 200 2>/dev/null", 60, delay)
     log("shell is up")
 
 
 def command(child, cmd, timeout, delay=0.0):
-    """Run cmd, return (output, exit status)."""
-    sendline(child, f"{cmd}; echo {SENTINEL}rc=$?", delay)
-    child.expect(PROMPT, timeout=timeout)
+    """Run cmd, wait for its marker, return (output, exit status)."""
+    sendline(child, f"{cmd}; echo {MARKER}rc=$?", delay)
+    child.expect(RC_RE, timeout=timeout)
+    status = int(child.match.group(1))
     raw = child.before
-    m = re.search(re.escape(SENTINEL) + r"rc=(\d+)", raw)
-    status = int(m.group(1)) if m else -1
-    # Drop the echoed command line and the rc marker from the output.
-    lines = [
-        l
-        for l in raw.splitlines()
-        if SENTINEL not in l and l.strip() != cmd.strip()
-    ]
+
+    # What comes back is the shell's echo of the command line, possibly
+    # with a prompt in front of it, then the output.  Drop everything up to
+    # and including the echo, then anything still carrying the marker.
+    lines = raw.splitlines()
+    tail = cmd.strip()[-40:]
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].rstrip().endswith(tail) or SENT_A in lines[i]:
+            lines = lines[i + 1:]
+            break
+    lines = [l for l in lines if SENT_A not in l]
     return "\n".join(lines).strip(), status
 
 

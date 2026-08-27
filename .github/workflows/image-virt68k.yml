@@ -79,6 +79,7 @@ jobs:
             --checks checks.txt \
             --boot-timeout 2400 \
             --cmd-timeout 900 \
+            --send-delay 0.06 \
             --console-log console-virt68k.log \
             -- \
             qemu-system-m68k -machine virt -nographic -m 512m \
