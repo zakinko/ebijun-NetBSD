@@ -63,23 +63,47 @@ def log(msg):
 
 
 def sendline(child, text, delay):
-    """Type a line one character at a time.
+    """Type a line, waiting for each character to come back.
 
-    An emulated serial console is not a pipe.  The Goldfish TTY the m68k
-    kernel runs on drops characters when they arrive faster than it reads
-    them, and a dropped character in the middle of "root" leaves the login
-    prompt waiting while everything sent afterwards is typed into it.  A
-    couple of hundredths of a second per character costs a second or two
-    per command and makes the difference between a session and a mess.
+    An emulated serial console is not a pipe.  The virt68k console showed
+    "login: r" -- the rest of "root" gone -- at a hundredth of a second per
+    character and again at six hundredths, and then echoed the next line
+    with every character doubled.  A fixed delay cannot fix that, because
+    the loss is not about rate: getty flushes its input while it is still
+    setting the terminal up, so whatever was typed in that window is
+    discarded no matter how slowly it arrived.
+
+    So instead of guessing at a delay, wait for the far end to say it got
+    each character.  Echo is on -- nothing here turns it off -- so a
+    character that comes back has been read, and one that does not can be
+    sent again.  A doubled echo is harmless: it is still the character we
+    are waiting for.
+
+    delay <= 0 sends the whole line at once, which is right for a console
+    with a real CPU behind it.
     """
     if delay <= 0:
         child.sendline(text)
         return
+
     for ch in text:
-        child.send(ch)
-        time.sleep(delay)
+        for attempt in range(3):
+            child.send(ch)
+            if ch in " \t":
+                # Whitespace does not always come back verbatim; nothing to
+                # match against, so pay the delay instead.
+                time.sleep(delay)
+                break
+            try:
+                child.expect_exact(ch, timeout=5)
+                break
+            except pexpect.TIMEOUT:
+                if attempt == 2:
+                    log(f"console never echoed {ch!r}; carrying on")
+            except pexpect.EOF:
+                return
     child.send("\r")
-    time.sleep(delay)
+    time.sleep(max(delay, 0.2))
 
 
 def annotate(level, msg):
@@ -152,6 +176,13 @@ def establish_prompt(child, timeout, delay):
         raise Failure(f"no login prompt within {timeout}s")
     if idx == 3:
         raise Failure("QEMU exited before reaching a login prompt")
+
+    # getty prints its prompt before it has finished setting the terminal
+    # up, and flushes the input queue when it does.  Anything typed inside
+    # that window is discarded however slowly it was sent -- which is what
+    # "login: r" was.  Let it settle first.
+    if delay > 0:
+        time.sleep(3)
 
     if idx == 0:
         sendline(child, "root", delay)

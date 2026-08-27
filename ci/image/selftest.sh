@@ -64,31 +64,38 @@ absent 'reallyhere'         :: echo reallyhere
 run                            true
 EOF
 
-section "boot-verify.py against a fake console"
+# Both typing modes.  0 sends a line at once, which is what a console with
+# a real CPU behind it gets; anything above 0 waits for each character to be
+# echoed back, which is what the m68k console needs and is a different code
+# path worth covering.
+for d in 0 0.01; do
+	section "boot-verify.py against a fake console (--send-delay $d)"
 
-out=$(python3 ci/image/boot-verify.py \
-    --checks "$WORK/checks" \
-    --boot-timeout 30 --cmd-timeout 30 \
-    --console-log "$WORK/console.log" \
-    -- "$WORK/console" 2>&1) || true
+	out=$(python3 ci/image/boot-verify.py \
+	    --checks "$WORK/checks" \
+	    --boot-timeout 30 --cmd-timeout 30 --send-delay "$d" \
+	    --console-log "$WORK/console-$d.log" \
+	    -- "$WORK/console" 2>&1) || true
 
-echo "$out" | sed 's/^/  /'
+	echo "$out" | sed 's/^/  /'
 
-# Exactly one failure, and it has to be the negative control on line 13.
-nfail=$(echo "$out" | grep -c '^FAIL ' || true)
-if [ "$nfail" -ne 1 ]; then
-	fail ci/image/boot-verify.py 0 \
-	    "expected exactly 1 failure from the self-test, got $nfail"
-elif ! echo "$out" | grep -q 'reallyhere.*unexpectedly matched'; then
-	fail ci/image/boot-verify.py 0 \
-	    'the one failure was not the absent negative control'
-fi
+	# Exactly one failure, and it has to be the negative control.
+	nfail=$(echo "$out" | grep -c '^FAIL ' || true)
+	if [ "$nfail" -ne 1 ]; then
+		fail ci/image/boot-verify.py 0 \
+		    "--send-delay $d: expected exactly 1 failure, got $nfail"
+	elif ! echo "$out" | grep -q 'reallyhere.*unexpectedly matched'; then
+		fail ci/image/boot-verify.py 0 \
+		    "--send-delay $d: the one failure was not the absent control"
+	fi
 
-# And every other check has to have passed, which means the login was
-# found and the outputs lined up.
-for want in ' three ' '\^exact\$' '\^alpha\$' '\^bravo\$' '\^charlie\$'; do
-	echo "$out" | grep -q "ok .*$want" ||
-	    fail ci/image/boot-verify.py 0 "self-test did not pass $want"
+	# And every other check has to have passed, which means the login
+	# was found and the outputs lined up.
+	for want in ' three ' '\^exact\$' '\^alpha\$' '\^bravo\$' '\^charlie\$'; do
+		echo "$out" | grep -q "ok .*$want" ||
+		    fail ci/image/boot-verify.py 0 \
+		        "--send-delay $d: did not pass $want"
+	done
 done
 
 finish
