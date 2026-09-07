@@ -105,6 +105,16 @@ EOF
 # and /etc/ttys is left as it ships -- with the console getty off, which is
 # one less thing writing to the line.
 if [ -f "$CHECKS_SCRIPT" ]; then
+	# Syntax-check it before it goes in.  This file is generated, and a
+	# generated file that is broken installs just as quietly as a good
+	# one: the image would boot, rc.local would die on the first parse
+	# error, no results would ever reach the console, and the failure
+	# would read as "the image never answered" rather than "the script
+	# was malformed".
+	if ! sh -n "$CHECKS_SCRIPT"; then
+		echo "$CHECKS_SCRIPT does not parse; refusing to install it" >&2
+		exit 1
+	fi
 	cp "$CHECKS_SCRIPT" "$root/root/cicheck.sh"
 	chmod 755 "$root/root/cicheck.sh"
 	printf '\nsh /root/cicheck.sh\n' >>"$root/etc/rc.local"

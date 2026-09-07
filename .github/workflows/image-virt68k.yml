@@ -62,6 +62,10 @@ jobs:
           sudo apt-get install -y python3-pexpect
           cat ci/image/checks/common.txt ci/image/checks/virt68k.txt > checks.txt
           python3 ci/image/boot-verify.py --checks checks.txt --emit-script > cicheck.sh
+          # Generated, so check it parses before it is worth carrying into
+          # an image.  A broken one installs as quietly as a good one and
+          # the failure reads as "the image never answered".
+          sh -n cicheck.sh
           echo "--- cicheck.sh ---"
           cat cicheck.sh
 

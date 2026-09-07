@@ -110,6 +110,11 @@ section "the compiled in-image script"
 python3 ci/image/boot-verify.py --checks "$WORK/checks" --emit-script \
     >"$WORK/cicheck.sh"
 
+# The generator is code too, and a script that does not parse would be
+# installed into the image just as quietly as one that does.
+sh -n "$WORK/cicheck.sh" ||
+    fail ci/image/boot-verify.py 0 'the emitted script does not parse'
+
 # Running it here rather than in an image, so it must not power the machine
 # off when it reaches the end.
 sed -e 's|^halt -p$|exit 0|' -e 's|^sync$|:|' "$WORK/cicheck.sh" \
